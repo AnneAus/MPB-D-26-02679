@@ -1,5 +1,11 @@
 # Differences in trace element concentrations and stable isotope values among juvenile Leach's storm-petrels (*Hydrobates leucorhous*) from colonies in the North Atlantic
 
+Anne N.M.A. Ausems, Sophie Roy, Alexander L. Bond, Laura Crick, Joshua T.
+Cunningham, Erpur S. Hansen, April Hedd, Stephen Hurling, Trevor MacLaurin,
+Laura A. McFarlane Tranquilla, Jennifer C. Rock, Robert A. Ronconi, Manon
+Sorais, Katharine R. Studholme, Christopher R.E. Ward, Sabina I. Wilhelm,
+Sarah N.P. Wong, Glenn T. Crossin
+
 Code and data for manuscript MPB-D-26-02679.
 
 ## Contents
