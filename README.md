@@ -47,9 +47,12 @@ Open `github.Rproj` in RStudio and render the Quarto files in `scripts/`.
 The scripts read from `data/` and create `models/`, `output/` and `figures/`
 themselves, so those folders are not included in the repository.
 
-Most packages are on CRAN. `rnaturalearthhires` is installed from rOpenSci:
+The R, Quarto and package versions used are listed in `package_versions.txt`.
+Most packages are on CRAN. `censlm` is installed from GitHub and
+`rnaturalearthhires` from rOpenSci:
 
 ```r
+remotes::install_github("mikmart/censlm")
 install.packages("rnaturalearthhires", repos = "https://ropensci.r-universe.dev")
 ```
 
