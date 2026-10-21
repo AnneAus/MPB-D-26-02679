@@ -43,18 +43,21 @@ https://doi.org/10.5683/SP3/KDXLHK
 
 ## Running the analysis
 
-Open `github.Rproj` in RStudio and render the Quarto files in `scripts/`.
+The analysis was run with R 4.6.1 and Quarto 1.10.18. The exact package
+versions are recorded with [renv](https://rstudio.github.io/renv/) in
+`renv.lock`.
+
+1. Open `github.Rproj` in RStudio. renv installs itself on first opening.
+2. Install the recorded package versions:
+
+   ```r
+   renv::restore()
+   ```
+
+3. Render the Quarto files in `scripts/`.
+
 The scripts read from `data/` and create `models/`, `output/` and `figures/`
 themselves, so those folders are not included in the repository.
-
-The R, Quarto and package versions used are listed in `package_versions.txt`.
-Most packages are on CRAN. `censlm` is installed from GitHub and
-`rnaturalearthhires` from rOpenSci:
-
-```r
-remotes::install_github("mikmart/censlm")
-install.packages("rnaturalearthhires", repos = "https://ropensci.r-universe.dev")
-```
 
 ## License
 

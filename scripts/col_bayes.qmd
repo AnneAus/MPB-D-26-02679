@@ -13,20 +13,15 @@ format: html
 
 library(tidyverse)
 library(readxl)
-library(censlm)
 library(brms)
 library(bayesplot)
 library(tidybayes)
-library(loo)
 library(emmeans)
-library(ggdist)
 library(modelr)
 library(RColorBrewer)
-library(nicheROVER)
 library(mvtnorm)
 library(officer)
 library(xml2)
-library(NADA)
 
 # Use quantile-based (equal-tailed) credible intervals for all emmeans() contrasts
 emm_options(post.ci.method = "quantile")
