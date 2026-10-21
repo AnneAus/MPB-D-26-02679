@@ -23,6 +23,18 @@ The copies in `data/` are included so the scripts run directly. Please cite the
 Borealis datasets when using the data. The terms of use are given on each
 dataset's Borealis page.
 
+### References
+
+Ausems, A.N.M.A., Hurling, S., Bond, A.L., Crick, L., Hansen, E.S., Hedd, A.,
+Studholme, K.R., Ronconi, R.A., Crossin, G.T., 2026a. Trace element
+concentrations of juvenile fourth secondary feathers of Leach's storm-petrel
+from Iceland. https://doi.org/10.5683/SP4/ULR9MW
+
+Ausems, A.N.M.A., Roy, S., Bond, A., Crick, L., Hedd, A., Studholme, K.,
+Ronconi, R., Crossin, G., 2026b. Trace element concentrations and stable
+isotope values of juvenal fourth secondary feathers of Leach's storm-petrels.
+https://doi.org/10.5683/SP3/KDXLHK
+
 ## Running the analysis
 
 Open `github.Rproj` in RStudio and render the Quarto files in `scripts/`.
