@@ -17,6 +17,10 @@ Code and data for manuscript MPB-D-26-02679.
 - `scripts/`
   - `col_bayes.qmd`: Bayesian models (brms), sensitivity analyses, figures and tables
   - `map.qmd`: study area map
+- `renv.lock`, `renv/`, `.Rprofile`: package versions and renv setup (see Running the analysis)
+- `MPB-D-26-02679.Rproj`: RStudio project file
+- `CITATION.cff`: how to cite this repository
+- `LICENSE`: MIT License for the code
 
 ## Data availability
 
@@ -47,7 +51,7 @@ The analysis was run with R 4.6.1 and Quarto 1.10.18. The exact package
 versions are recorded with [renv](https://rstudio.github.io/renv/) in
 `renv.lock`.
 
-1. Open `github.Rproj` in RStudio. renv installs itself on first opening.
+1. Open `MPB-D-26-02679.Rproj` in RStudio. renv installs itself on first opening.
 2. Install the recorded package versions:
 
    ```r

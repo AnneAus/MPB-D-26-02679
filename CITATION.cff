@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite it as below."
+type: software
+title: "Code for: Differences in trace element concentrations and stable isotope values among juvenile Leach's storm-petrels (Hydrobates leucorhous) from colonies in the North Atlantic"
+authors:
+  - given-names: Anne N.M.A.
+    family-names: Ausems
+    email: anneausems@ecos.au.dk
+  - given-names: Sophie
+    family-names: Roy
+  - given-names: Alexander L.
+    family-names: Bond
+  - given-names: Laura
+    family-names: Crick
+  - given-names: Joshua T.
+    family-names: Cunningham
+  - given-names: Erpur S.
+    family-names: Hansen
+  - given-names: April
+    family-names: Hedd
+  - given-names: Stephen
+    family-names: Hurling
+  - given-names: Trevor
+    family-names: MacLaurin
+  - given-names: Laura A.
+    family-names: McFarlane Tranquilla
+  - given-names: Jennifer C.
+    family-names: Rock
+  - given-names: Robert A.
+    family-names: Ronconi
+  - given-names: Manon
+    family-names: Sorais
+  - given-names: Katharine R.
+    family-names: Studholme
+  - given-names: Christopher R.E.
+    family-names: Ward
+  - given-names: Sabina I.
+    family-names: Wilhelm
+  - given-names: Sarah N.P.
+    family-names: Wong
+  - given-names: Glenn T.
+    family-names: Crossin
+repository-code: "https://github.com/AnneAus/MPB-D-26-02679"
+license: MIT
+keywords:
+  - Leach's storm-petrel
+  - Hydrobates leucorhous
+  - trace elements
+  - stable isotopes
+  - feathers
+  - North Atlantic
+  - brms
