@@ -1,4 +1,4 @@
-# Colony and inshore comparisons of trace elements and stable isotopes
+# Differences in trace element concentrations and stable isotope values among juvenile Leach's storm-petrels (*Hydrobates leucorhous*) from colonies in the North Atlantic
 
 Code and data for manuscript MPB-D-26-02679.
 
