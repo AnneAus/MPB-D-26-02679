@@ -7,7 +7,7 @@ Code and data for manuscript MPB-D-26-02679.
 - `data/`
   - `all_data_wide.RDS`: trace element and stable isotope data
   - `icelandic_data.xlsx`: Icelandic data
-  - `locations.xlsx`: sampling locations (used for the map)
+  - `locations.xlsx`: sampling locations for both the Canadian and Icelandic birds (used for the map)
 - `scripts/`
   - `col_bayes.qmd`: Bayesian models (brms), sensitivity analyses, figures and tables
   - `map.qmd`: study area map
