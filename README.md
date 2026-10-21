@@ -24,6 +24,11 @@ Most packages are on CRAN. `rnaturalearthhires` is installed from rOpenSci:
 install.packages("rnaturalearthhires", repos = "https://ropensci.r-universe.dev")
 ```
 
+## License
+
+The code in `scripts/` is released under the MIT License (see `LICENSE`).
+The MIT License does not cover the data in `data/`.
+
 ## Contact
 
 Anne Ausems (anneausems@ecos.au.dk)
