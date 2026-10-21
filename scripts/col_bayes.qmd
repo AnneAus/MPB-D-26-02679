@@ -1,0 +1,1799 @@
+---
+title: "analysis"
+author: "A Ausems"
+execute: 
+  echo: false
+  warning: false
+  include: false
+format: html
+---
+
+```{r load-libraries}
+#| message: false
+
+library(tidyverse)
+library(readxl)
+library(censlm)
+library(brms)
+library(bayesplot)
+library(tidybayes)
+library(loo)
+library(emmeans)
+library(ggdist)
+library(modelr)
+library(RColorBrewer)
+library(nicheROVER)
+library(mvtnorm)
+library(officer)
+library(xml2)
+library(NADA)
+
+# Use quantile-based (equal-tailed) credible intervals for all emmeans() contrasts
+emm_options(post.ci.method = "quantile")
+```
+
+```{r setup-dirs}
+# Creates the output folders this script writes to (models/, output/, figures/)
+dir.create("../models", showWarnings = FALSE)
+dir.create("../output", showWarnings = FALSE)
+dir.create("../output/tables", showWarnings = FALSE)
+dir.create("../figures", showWarnings = FALSE)
+```
+
+```{r load-data}
+#| message: false
+
+all_data_wide <- readRDS("../data/all_data_wide.RDS") %>%
+  filter(pool_source == "Colony")
+iceland_data <- readxl::read_xlsx("../data/icelandic_data.xlsx")  
+```
+
+```{r ice-lng}
+#| include: true
+
+ice_lng <- iceland_data %>%
+  mutate(
+    across(V:Pb, ~ case_when(str_detect(., "<") ~ TRUE, 
+                             is.na(.) ~ NA, 
+                             TRUE ~ FALSE),
+           .names = "{.col}_BDT")) %>%
+  mutate(across(where(is.character), ~ str_remove(., "<"))) %>%
+  mutate(across(V:Pb, ~ as.numeric(.))) %>%
+  rename_with( ~ paste0(.x, "_conc"), 
+               V:Pb) %>%
+  pivot_longer(V_conc:Pb_BDT, 
+               names_to = c("element", ".value"), 
+               names_sep = "\\_") 
+
+head(ice_lng)
+```
+
+```{r can-lng}
+can_lng <- all_data_wide %>%
+  select(year, ID, source, Cu:Pb) %>%
+  pivot_longer(Cu:Pb,
+               values_to = "conc",
+               names_to = "element") %>%
+  left_join(all_data_wide %>%
+  select(year, ID, source, Cu_BDT:Pb_BDT) %>%
+  pivot_longer(Cu_BDT:Pb_BDT,
+               values_to = "BDT",
+               names_to = "element") %>%
+    mutate(element = str_remove(element, "_BDT")))
+
+can_lng_SI <- all_data_wide %>%
+  select(year, ID, source, d13C:d15N) %>%
+  pivot_longer(d13C:d15N,
+               values_to = "conc",
+               names_to = "element") %>%
+  mutate(BDT = FALSE)
+```
+
+```{r join-all}
+dat_all <- ice_lng %>%
+  mutate(source = "Iceland",
+         year = 2024) %>%
+  add_row(can_lng)
+```
+
+```{r cens-rates}
+dat_all %>%
+  group_by(element) %>%
+  mutate(n_tot = n()) %>%
+  filter(BDT) %>%
+  reframe(n_tot = n_tot, 
+          n_bdt = n(),
+          prop = n_bdt/n_tot) %>%
+  distinct()
+```
+
+```{r identify-imp-out}
+# #Trace elements with censored data
+# TE_imp <- dat_all %>%
+#   arrange(BDT) %>%
+#   group_by(BDT, element) %>%
+#   filter(BDT) %>%
+#   tally() %>%
+#   pull(element)
+# 
+# TE_imp <- TE_imp[-6] #remove TL because the LOQs are higher than the non-censored data
+```
+
+```{r}
+# BDT counts per colony - diagnostic only
+dat_all %>%
+  group_by(source) %>%
+  filter(BDT) %>%
+  tally()
+```
+
+```{r plot-dist}
+dat_p <- dat_all %>%
+  filter_out(element == "Tl") %>%
+  filter_out(element == "Co" & conc > 500) %>% #erroneous measurement
+  mutate(element = factor(element),
+         log_conc = log(conc))
+
+levels(dat_p$element) <- c("As" = "ln(As)",
+                           "Cd" = "ln(Cd)",
+                           "Co" = "ln(Co)",
+                           "Cu" = "ln(Cu)",
+                           "Hg" = "ln(Hg)",
+                           "Mn" = "ln(Mn)",
+                           "Pb" = "ln(Pb)",
+                           "V" = "ln(V)",
+                           "Zn" = "ln(Zn)")
+
+elements_essential <- c("Co", "Cu", "Mn", "Zn")
+elements_nonessential <- c("As", "Cd", "Hg", "Pb", "V")
+elements_te_tab <- c(elements_essential, elements_nonessential)
+
+dat_box <- dat_p %>%
+  mutate(element = factor(element, levels = paste0("ln(", elements_te_tab, ")")),
+         source = factor(source, levels = c("Kent", "Country", "Middle_lawn",
+                                            "Gull", "Baccalieu", "Iceland")),
+         source = fct_recode(source, `Middle Lawn` = "Middle_lawn"),
+         BDT = factor(BDT, levels = c(FALSE, TRUE)))
+
+box_el_plot <- function(el, bottom, x_lab = NULL) {
+  dat_box %>%
+    filter(element == paste0("ln(", el, ")")) %>%
+    ggplot() +
+    geom_point(aes(x = source, y = log_conc,
+                   col = BDT, alpha = BDT),
+               position = position_jitter(width = 0.2, height = 0, seed = 42),
+               show.legend = TRUE) +
+    geom_boxplot(linewidth = 0.75,
+                 aes(x = source, y = log_conc),
+                 fill = NA) +
+    facet_wrap(~ element, strip.position = "left") +
+    scale_colour_manual(values = c("black", "red"), drop = FALSE) +
+    scale_alpha_manual(values = c(0.25, 0.5), drop = FALSE) +
+    theme_classic() +
+    theme(strip.placement = "outside",
+          strip.background = element_blank(),
+          text = element_text(size = 30),
+          axis.text.x = if (bottom) element_text(angle = 90, vjust = 0.5, hjust=1)
+                        else element_blank(),
+          axis.ticks.x = if (bottom) element_line() else element_blank(),
+          plot.margin = margin(5, 15, 5, 15)) +
+    guides(col = guide_legend(override.aes = list(size = 3)),
+           alpha = guide_legend(override.aes = list(size = 3))) +
+    labs(x = x_lab,
+         y = NULL,
+         col = "Censored (< LOQ)",
+         alpha = "Censored (< LOQ)")
+}
+
+box_group_label <- function(txt, base_size = 30) {
+  ggplot() +
+    annotate("text", x = 0.5, y = 0.5, label = txt, size = base_size * 0.8 / .pt) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE, clip = "off") +
+    theme_void() +
+    theme(panel.border = element_rect(fill = NA, colour = "black", linewidth = 0.5),
+          plot.margin = margin(5, 15, 5, 15))
+}
+
+p_box <- patchwork::wrap_plots(
+  a = box_group_label("Essential"),
+  b = box_el_plot("Co", FALSE), c = box_el_plot("Cu", FALSE), d = box_el_plot("Mn", FALSE),
+  e = box_group_label("Essential"), f = box_group_label("Non-essential"),
+  g = box_el_plot("Zn", FALSE), h = box_el_plot("As", FALSE), i = box_el_plot("Cd", FALSE),
+  j = box_group_label("Non-essential"),
+  k = box_el_plot("Hg", TRUE), l = box_el_plot("Pb", TRUE, "Colony"), m = box_el_plot("V", TRUE),
+  design = "aaa\nbcd\neff\nghi\njjj\nklm",
+  heights = c(0.12, 1, 0.12, 1, 0.12, 1),
+  guides = "collect"
+) &
+  theme(legend.position = "bottom")
+
+p_box
+
+ggsave("../figures/box_col.png", p_box,
+       width = 35, height = 40, unit = "cm", dpi = 500)
+```
+
+```{r brm-TE}
+brm_dat <- dat_all %>%
+  filter_out(element == "Tl") %>%
+  filter_out(element == "Co" & conc > 500) %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(source = fct_relevel(source, "Iceland", after = 5)) %>%
+  mutate(element = factor(element),
+         source = factor(source, levels = c("Kent", "Country", "Middle_lawn",
+                                            "Gull", "Baccalieu", "Iceland")),
+         source = fct_recode(source, `Middle Lawn` = "Middle_lawn"),
+         cens_ind = if_else(BDT, "left", "none"))
+
+write_rds(brm_dat, "../output/brm_dat.rds")
+
+priors_te <- prior(normal(0, 2), class = "b")
+
+elements_te <- levels(brm_dat$element)
+
+m_elem <- list()
+
+for (el in elements_te) {
+
+  dat_el <- brm_dat %>%
+    filter(element == el)
+
+  m_elem[[el]] <- brm(bf(log(conc) | cens(cens_ind) ~ source),
+                       data = dat_el,
+                       seed = 42,
+                       iter = 4000,
+                       cores = 6,
+                       chains = 6,
+                       family = student,
+                       prior = priors_te,
+                       file = paste0("../models/bm_TE_", el, ".rds"),
+                       file_refit = "on_change",
+                       silent = 2,
+                       save_pars = save_pars(all = TRUE))
+}
+```
+
+```{r prior-pred-TE}
+set.seed(42)
+n_prior_draws <- 2000
+
+prior_pred_draws_te <- elements_te %>%
+  map(function(el) {
+
+    dat_el <- brm_dat %>% filter(element == el)
+    log_conc <- log(dat_el$conc)
+    mu0 <- median(log_conc)
+    s0 <- mad(log_conc)
+
+    colonies <- levels(dat_el$source)
+    non_ref <- colonies[-1]
+
+    intercept_draws <- mu0 + s0 * rt(n_prior_draws, df = 3)
+    b_draws <- non_ref %>%
+      map(~ rnorm(n_prior_draws, 0, 2)) %>%
+      set_names(non_ref) %>%
+      as_tibble()
+    sigma_draws <- abs(2.5 * rt(n_prior_draws, df = 3))
+    nu_draws <- pmax(rgamma(n_prior_draws, 2, 0.1), 1)
+
+    sim_conc <- colonies %>%
+      map(function(col) {
+        loc <- if (col == colonies[1]) intercept_draws else intercept_draws + b_draws[[col]]
+        log_sim <- loc + sigma_draws * rt(n_prior_draws, df = nu_draws)
+        exp(log_sim)
+      }) %>%
+      unlist()
+
+    tibble(element = el, sim_conc = sim_conc)
+  }) %>%
+  list_rbind()
+
+prior_pred_te <- prior_pred_draws_te %>%
+  group_by(element) %>%
+  summarise(prior_pred_q025 = quantile(sim_conc, 0.025),
+            prior_pred_median = quantile(sim_conc, 0.5),
+            prior_pred_q975 = quantile(sim_conc, 0.975)) %>%
+  left_join(brm_dat %>%
+              group_by(element) %>%
+              summarise(obs_min = min(conc), obs_max = max(conc)),
+            by = "element")
+
+prior_pred_te
+
+write_csv(prior_pred_te, "../output/prior_pred_te.csv")
+```
+
+```{r prior-pred-TE-plot}
+# Each panel is trimmed to the central 99% of that element's simulated
+# distribution for display only (the summary statistics above use the full,
+# untrimmed simulation)
+prior_pred_plot_dat <- prior_pred_draws_te %>%
+  mutate(log_conc = log(sim_conc),
+         element = factor(element, levels = elements_te_tab)) %>%
+  group_by(element) %>%
+  filter(log_conc >= quantile(log_conc, 0.005, na.rm = TRUE),
+         log_conc <= quantile(log_conc, 0.995, na.rm = TRUE)) %>%
+  ungroup()
+
+obs_plot_dat <- brm_dat %>%
+  mutate(log_conc = log(conc),
+         element = factor(element, levels = elements_te_tab))
+
+prior_pred_el_plot <- function(el, x_lab = NULL, y_lab = NULL) {
+  prior_pred_plot_dat %>%
+    filter(element == el) %>%
+    ggplot(aes(x = log_conc)) +
+    geom_density(fill = "#6BAED6", alpha = 0.5, col = NA) +
+    geom_rug(data = filter(obs_plot_dat, element == el), sides = "b", alpha = 0.4) +
+    facet_wrap(~ element, scales = "free", strip.position = "bottom") +
+    theme_classic() +
+    theme(text = element_text(size = 16),
+          strip.placement = "outside",
+          strip.background = element_blank(),
+          plot.margin = margin(5, 8, 5, 8)) +
+    labs(x = x_lab, y = y_lab)
+}
+
+prior_pred_te_p <- patchwork::wrap_plots(
+  a = box_group_label("Essential", base_size = 16),
+  b = prior_pred_el_plot("Co"), c = prior_pred_el_plot("Cu"), d = prior_pred_el_plot("Mn"),
+  e = box_group_label("Essential", base_size = 16),
+  f = box_group_label("Non-essential", base_size = 16),
+  g = prior_pred_el_plot("Zn", y_lab = "Prior predictive density"),
+  h = prior_pred_el_plot("As"), i = prior_pred_el_plot("Cd"),
+  j = box_group_label("Non-essential", base_size = 16),
+  k = prior_pred_el_plot("Hg"), l = prior_pred_el_plot("Pb", x_lab = "ln (concentration)"),
+  m = prior_pred_el_plot("V"),
+  design = "aaa\nbcd\neff\nghi\njjj\nklm",
+  heights = c(0.12, 1, 0.12, 1, 0.12, 1)
+)
+
+prior_pred_te_p
+
+ggsave("../figures/prior_pred_te.png", prior_pred_te_p,
+       width = 30, height = 22, unit = "cm", dpi = 500)
+```
+
+```{r diag-TE}
+set.seed(42)
+
+# Convergence diagnostics per element
+diag_te <- elements_te %>%
+  map(function(el) {
+    m <- m_elem[[el]]
+    tibble(element = el,
+           max_rhat = max(brms::rhat(m)),
+           n_divergent = sum(subset(nuts_params(m), Parameter == "divergent__")$Value),
+           n_draws = ndraws(m),
+           bayes_R2 = bayes_R2(m)[1, "Estimate"])
+  }) %>%
+  list_rbind()
+
+diag_te
+
+write_csv(diag_te, "../output/diag_te.csv")
+
+loo_te <- elements_te %>%
+  map(function(el) {
+    m <- m_elem[[el]]
+    l <- loo(m)
+    k_before <- l$diagnostics$pareto_k
+    l_mm <- loo_moment_match(m, l)
+    k_after <- l_mm$diagnostics$pareto_k
+    tibble(element = el,
+           n_k07_before = sum(k_before > 0.7),
+           max_k_before = max(k_before),
+           n_k07_after = sum(k_after > 0.7),
+           max_k_after = max(k_after))
+  }) %>%
+  list_rbind()
+
+loo_te
+
+write_csv(loo_te, "../output/loo_te.csv")
+
+
+# Priors per element
+for (el in elements_te) {
+  cat("---", el, "---\n")
+  print(prior_summary(m_elem[[el]]))
+}
+
+# Posterior predictive check per element
+for (el in elements_te) {
+  print(pp_check(m_elem[[el]]) + ggtitle(el))
+}
+```
+
+```{r ppc-stat-TE}
+# Posterior predictive checks targeting distributional shape and spread using skewness and IQR
+set.seed(42)
+
+row_skewness <- function(m) {
+  xc <- m - rowMeans(m)
+  rowMeans(xc^3) / (rowMeans(xc^2))^(3/2)
+}
+
+skewness <- function(x) {
+  xc <- x - mean(x)
+  mean(xc^3) / mean(xc^2)^(3/2)
+}
+
+conc_rep_te <- elements_te %>%
+  map(function(el) exp(posterior_predict(m_elem[[el]]))) %>%
+  set_names(elements_te)
+
+skew_obs_te <- elements_te %>%
+  map_dbl(~ row_skewness(matrix((brm_dat %>% filter(element == .x))$conc, nrow = 1))) %>%
+  set_names(elements_te)
+skew_rep_te <- elements_te %>%
+  map(~ row_skewness(conc_rep_te[[.x]])) %>%
+  set_names(elements_te)
+
+ppc_stat_te <- elements_te %>%
+  map(function(el) {
+    conc_obs <- (brm_dat %>% filter(element == el))$conc
+    conc_rep <- conc_rep_te[[el]]
+
+    skew_obs <- skew_obs_te[[el]]
+    skew_rep <- skew_rep_te[[el]]
+    iqr_obs <- IQR(conc_obs)
+    iqr_rep <- apply(conc_rep, 1, IQR)
+
+    tibble(element = el,
+           stat = c("skewness", "IQR"),
+           T_obs = c(skew_obs, iqr_obs),
+           bayesian_p = c(mean(skew_rep > skew_obs, na.rm = TRUE),
+                          mean(iqr_rep > iqr_obs, na.rm = TRUE)),
+           n_excluded_nonfinite = c(sum(!is.finite(skew_rep)), sum(!is.finite(iqr_rep))))
+  }) %>%
+  list_rbind()
+
+ppc_stat_te
+
+write_csv(ppc_stat_te, "../output/ppc_stat_te.csv")
+
+# IQR check figures
+for (el in elements_te) {
+  conc_obs <- (brm_dat %>% filter(element == el))$conc
+  conc_rep <- conc_rep_te[[el]]
+
+  p_iqr <- ppc_stat(y = conc_obs, yrep = conc_rep, stat = "IQR") + ggtitle(paste(el, "- IQR"))
+
+  print(p_iqr)
+
+  # ggsave(paste0("../figures/ppc_stat_", el, "_IQR.png"), p_iqr,
+  #        width = 15, height = 10, unit = "cm", dpi = 300)
+}
+
+#Skewness check figures
+skew_plot_dat <- elements_te %>%
+  map(~ tibble(element = .x, skew_rep = skew_rep_te[[.x]])) %>%
+  list_rbind() %>%
+  filter(is.finite(skew_rep)) %>%
+  mutate(element = factor(element, levels = elements_te))
+
+skew_obs_dat <- tibble(element = factor(elements_te, levels = elements_te),
+                        skew_obs = skew_obs_te[elements_te])
+
+ppc_stat_te_skew_p <- skew_plot_dat %>%
+  ggplot(aes(x = skew_rep)) +
+  geom_histogram(fill = "#6BAED6", alpha = 0.7, col = NA, bins = 30) +
+  geom_vline(data = skew_obs_dat, aes(xintercept = skew_obs),
+             col = "#DE2D26", linewidth = 0.8) +
+  facet_wrap(~ element, scales = "free", strip.position = "bottom", nrow = 3) +
+  theme_classic() +
+  theme(text = element_text(size = 16),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        panel.spacing = unit(1, "lines")) +
+  labs(x = "Simulated skewness (posterior predictive replicates)",
+       y = "Count")
+
+ppc_stat_te_skew_p
+
+# ggsave("../figures/ppc_stat_te_skewness.png", width = 30, height = 20, unit = "cm", dpi = 500)
+```
+
+```{r summary-statistics-incl-out-TE}
+brm_dat %>%
+  group_by(source, element) %>%
+  summarise(mean = round(mean(conc), 2),
+            sd = round(sd(conc), 2),
+            min = round(min(conc), 2),
+            max = round(max(conc), 2)) # %>%
+  # write_csv("../output/sumstats.csv")
+
+nrow(brm_dat)
+length(unique(brm_dat$ID))
+```
+
+```{r emm-TE}
+# Pairwise colony contrasts per element, plus back-transformed effect sizes.
+em_col <- elements_te %>%
+  map(function(el) {
+    as.data.frame(emmeans(m_elem[[el]], pairwise ~ source)$contrasts) %>%
+      mutate(element = el)
+  }) %>%
+  list_rbind()
+
+em_col <- em_col %>%
+  mutate(sig = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0,
+                         TRUE ~ 1),
+         ratio = exp(estimate),
+         ratio_lower = exp(lower.QL),
+         ratio_upper = exp(upper.QL),
+         pct_change = (ratio - 1) * 100,
+         pct_change_lower = (ratio_lower - 1) * 100,
+         pct_change_upper = (ratio_upper - 1) * 100)
+
+write_csv(em_col, "../output/emmeans_contr.csv")
+
+em_col %>%
+  group_by(element) %>%
+  summarise(sig = sum(sig))
+```
+
+```{r emm-TE-heatmap}
+emm_heat_plot <- function(els, base_size, text_size, show_x = TRUE) {
+  em_col %>%
+    filter(element %in% els) %>%
+    separate_wider_delim(contrast, delim = " - ", names = c("col1", "col2")) %>%
+    group_by(col1, col2) %>%
+    summarise(total = sum(sig), .groups = "drop") %>%
+    mutate(prop = total / length(els),
+           col1 = factor(col1, levels = c("Kent", "Country", "Middle Lawn",
+                                          "Gull", "Baccalieu", "Iceland")),
+           col2 = factor(col2, levels = c("Kent", "Country", "Middle Lawn",
+                                          "Gull", "Baccalieu", "Iceland"))) %>%
+    ggplot(aes(x = col1, y = col2, fill = prop)) +
+    geom_tile(col = "black", alpha = 0.75) +
+    geom_text(aes(label = total),
+              size = text_size) +
+    scale_fill_gradient(low = "#C6DBEF", high = "#084594",
+                        limits = c(0, 1), breaks = c(0, 0.25, 0.5, 0.75, 1),
+                        labels = scales::percent) +
+    scale_y_discrete(limits = rev) +
+    coord_equal() +
+    theme_classic() +
+    theme(text = element_text(size = base_size),
+          legend.position = "bottom",
+          legend.title = element_text(size = 20),
+          legend.text = element_text(size = 20),
+          axis.text.x = if (!show_x) element_blank()
+                        else if (base_size < 20) element_text(angle = 45, hjust = 1)
+                        else element_text(),
+          axis.ticks.x = if (show_x) element_line() else element_blank()) +
+    guides(fill = guide_legend(title.position = "top",
+                               nrow = 1)) +
+    labs(x = NULL,
+         y = NULL,
+         fill = "Trace elements different")
+}
+
+emm_heat_title <- theme(
+  plot.title.position = "panel",
+  plot.title = ggtext::element_textbox_simple(
+    size = 14, halign = 0.5,
+    box.colour = "black", linetype = 1, linewidth = 0.5, r = unit(0, "pt"),
+    padding = margin(4, 0, 4, 0), margin = margin(0, 0, 6, 0)))
+
+EMM_col_p <- patchwork::wrap_plots(
+  A = emm_heat_plot(elements_te_tab, base_size = 20, text_size = 8),
+  B = emm_heat_plot(elements_essential, base_size = 14, text_size = 5,
+                    show_x = FALSE) +
+    ggtitle("Essential") + emm_heat_title,
+  C = emm_heat_plot(elements_nonessential, base_size = 14, text_size = 5) +
+    ggtitle("Non-essential") + emm_heat_title,
+  design = "AAB\nAAC",
+  guides = "collect"
+) &
+  theme(legend.position = "bottom")
+
+EMM_col_p
+
+ggsave("../figures/EMM_col.png", plot = EMM_col_p,
+       width = 35, height = 25, unit = "cm", dpi = 500)
+```
+
+```{r eppd-TE}
+brm_dat_p <- elements_te %>%
+  map(function(el) {
+    brm_dat %>%
+      filter(element == el) %>%
+      data_grid(source) %>%
+      mutate(source = factor(source, levels = c("Kent", "Country", "Middle Lawn",
+                                                "Gull", "Baccalieu", "Iceland"))) %>%
+      add_epred_draws(m_elem[[el]]) %>%
+      mutate(element = el,
+             epred_conc = exp(.epred))
+  }) %>%
+  list_rbind() %>%
+  mutate(element = factor(element, levels = elements_te_tab))
+
+el_rect <- data.frame(element = factor(elements_te_tab, levels = elements_te_tab))
+el_fill <- setNames(rep(c("#F7FBFF", "#08306B"), length.out = length(elements_te_tab)),
+                    elements_te_tab)
+
+eppd_group_plot <- function(els, y_lab = NULL) {
+  brm_dat_p %>%
+    filter(element %in% els) %>%
+    ggplot(aes(x = source, y = epred_conc)) +
+    geom_rect(aes(xmin = -Inf, xmax = Inf, ymin = 0, ymax = Inf, fill = element),
+              data = filter(el_rect, element %in% els), alpha = 0.05, inherit.aes = FALSE) +
+    stat_pointinterval(aes(color = source),
+                       position = position_dodge(width = 0.85),
+                       point_size = 3, .width = c(0.66, 0.95)) +
+    facet_wrap(~ element, scales = "free_y",
+               strip.position = "bottom", nrow = 1) +
+    scale_color_manual(values = brewer.pal(9, "Blues")[-c(1:3)]) +
+    scale_fill_manual(guide = "none", values = el_fill) +
+    scale_y_log10() +
+    theme_classic() +
+    theme(text = element_text(size = 26),
+          strip.placement = "outside",
+          strip.background = element_blank(),
+          legend.position = "bottom",
+          legend.box.spacing = unit(0, "cm"),
+          legend.margin = margin(t = 0, b = 0),
+          plot.margin = margin(t = 2, b = 2, l = 5, r = 5),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.y = element_text(size = 11, color = "grey25"),
+          axis.title.x = element_text(margin = margin(t = 5)),
+          axis.line.y = element_line(color = "grey75"),
+          axis.ticks.y = element_line(color = "grey75"),
+          axis.line.x = element_line(color = "black"),
+          panel.spacing.x = unit(0.1, "lines")) +
+    guides(col = guide_legend(title.position = "top", nrow = 1)) +
+    labs(x = "Trace Element",
+         y = y_lab,
+         col = "Colony")
+}
+
+EPPD_col_p <- patchwork::wrap_plots(
+  a = box_group_label("Essential", base_size = 26),
+  b = box_group_label("Non-essential", base_size = 26),
+  c = eppd_group_plot(elements_essential, "EPPD (µg/g)"),
+  d = eppd_group_plot(elements_nonessential),
+  design = "aaaabbbbb\nccccddddd",
+  heights = c(0.15, 1),
+  guides = "collect",
+  axis_titles = "collect"
+) &
+  theme(legend.position = "bottom")
+
+EPPD_col_p
+
+ggsave("../figures/EPPD_col.png", EPPD_col_p,
+       width = 45, height = 11.5, unit = "cm", dpi = 500)
+```
+
+```{r brm-TE-year-sensitivity}
+# Sensitivity check for year
+brm_dat_yr <- brm_dat %>%
+  filter(source %in% c("Kent", "Country", "Gull")) %>%
+  filter(ID != "LHSP518") %>% #the only observation for Gull 2018
+  mutate(source = fct_drop(source),
+         year = factor(year))
+
+elements_te_yr <- levels(brm_dat_yr$element)
+
+m_elem_yr <- list()
+
+for (el in elements_te_yr) {
+
+  dat_el <- brm_dat_yr %>%
+    filter(element == el)
+
+  m_elem_yr[[el]] <- brm(bf(log(conc) | cens(cens_ind) ~ source + year),
+                         data = dat_el,
+                         seed = 42,
+                         iter = 4000,
+                         cores = 6,
+                         chains = 6,
+                         family = student,
+                         prior = priors_te,
+                         file = paste0("../models/bm_TE_yr_", el, ".rds"),
+                         file_refit = "on_change",
+                         silent = 2,
+                         save_pars = save_pars(all = TRUE))
+}
+```
+
+```{r diag-TE-year-sensitivity}
+diag_te_yr <- elements_te_yr %>%
+  map(function(el) {
+    m <- m_elem_yr[[el]]
+    tibble(element = el,
+           max_rhat = max(brms::rhat(m), na.rm = TRUE),
+           n_divergent = sum(subset(nuts_params(m), Parameter == "divergent__")$Value),
+           n_draws = ndraws(m))
+  }) %>%
+  list_rbind()
+
+diag_te_yr
+```
+
+```{r ppc-stat-TE-year-sensitivity}
+# Same skewness + IQR checks 
+set.seed(42)
+
+conc_rep_te_yr <- elements_te_yr %>%
+  map(function(el) exp(posterior_predict(m_elem_yr[[el]]))) %>%
+  set_names(elements_te_yr)
+
+ppc_stat_te_yr <- elements_te_yr %>%
+  map(function(el) {
+    conc_obs <- m_elem_yr[[el]]$data$conc
+    conc_rep <- conc_rep_te_yr[[el]]
+
+    skew_obs <- row_skewness(matrix(conc_obs, nrow = 1))
+    skew_rep <- row_skewness(conc_rep)
+    iqr_obs <- IQR(conc_obs)
+    iqr_rep <- apply(conc_rep, 1, IQR)
+
+    tibble(element = el,
+           stat = c("skewness", "IQR"),
+           T_obs = c(skew_obs, iqr_obs),
+           bayesian_p = c(mean(skew_rep > skew_obs, na.rm = TRUE),
+                          mean(iqr_rep > iqr_obs, na.rm = TRUE)),
+           n_excluded_nonfinite = c(sum(!is.finite(skew_rep)), sum(!is.finite(iqr_rep))))
+  }) %>%
+  list_rbind()
+
+ppc_stat_te_yr
+
+write_csv(ppc_stat_te_yr, "../output/ppc_stat_te_yr.csv")
+```
+
+```{r emm-TE-year-sensitivity}
+# Compare the Kent/Country/Gull pairwise contrasts from this year-adjusted
+# model against the same three contrasts from the main per-element models
+em_col_yr <- elements_te_yr %>%
+  map(function(el) {
+    as.data.frame(emmeans(m_elem_yr[[el]], pairwise ~ source)$contrasts) %>%
+      mutate(element = el)
+  }) %>%
+  list_rbind() %>%
+  mutate(sig_yr = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0,
+                            TRUE ~ 1))
+
+write_csv(em_col_yr, "../output/emmeans_contr_year_sensitivity.csv")
+
+te_year_sensitivity_comparison <- em_col %>%
+  filter(contrast %in% unique(em_col_yr$contrast)) %>%
+  select(contrast, element, sig) %>%
+  rename(sig_main = sig) %>%
+  inner_join(em_col_yr %>% select(contrast, element, sig_yr),
+             by = c("contrast", "element")) %>%
+  mutate(changed = sig_main != sig_yr)
+
+te_year_sensitivity_comparison
+
+cat("Contrasts where the significance call changed:",
+    sum(te_year_sensitivity_comparison$changed), "out of",
+    nrow(te_year_sensitivity_comparison), "\n")
+
+write_csv(te_year_sensitivity_comparison, "../output/te_year_sensitivity_comparison.csv")
+```
+
+```{r brm-SI}
+brm_dat_si <- can_lng_SI %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  filter_out(is.na(conc)) %>%
+  group_by(element) %>%
+  mutate(element = factor(element),
+         source = factor(source, levels = c("Kent", "Country", "Middle_lawn",
+                                            "Gull", "Baccalieu")),
+         source = fct_recode(source, `Middle Lawn` = "Middle_lawn")) %>%
+  ungroup() %>%
+  pivot_wider(id_cols = c(year, ID, source),
+              names_from = element,
+              values_from = conc)
+
+write_rds(brm_dat_si, "../output/brm_dat_si.rds")
+
+priors_si <- c(
+  prior(normal(0, 3), class = "b", resp = "d13C"),
+  prior(normal(0, 3), class = "b", resp = "d15N")
+)
+
+bf1 <- bf(mvbind(d13C, d15N) ~ source) + set_rescor(TRUE)
+
+m_si <- brm(bf1,
+            data = brm_dat_si,
+            seed = 42,
+            iter = 4000,
+            cores = 6,
+            chains = 6,
+            family = student,
+            prior = priors_si,
+            file = "../models/bm_SI_main.rds",
+            file_refit = "on_change",
+            silent = 2,
+            save_pars = save_pars(all = TRUE))
+```
+
+```{r prior-pred-SI}
+# Prior predictive check 
+set.seed(42)
+
+mu0_d13C <- median(brm_dat_si$d13C)
+s0_d13C <- mad(brm_dat_si$d13C)
+mu0_d15N <- median(brm_dat_si$d15N)
+s0_d15N <- mad(brm_dat_si$d15N)
+
+colonies_si <- levels(brm_dat_si$source)
+non_ref_si <- colonies_si[-1]
+
+intercept_d13C_draws <- mu0_d13C + s0_d13C * rt(n_prior_draws, df = 3)
+intercept_d15N_draws <- mu0_d15N + s0_d15N * rt(n_prior_draws, df = 3)
+
+b_d13C_draws <- non_ref_si %>%
+  map(~ rnorm(n_prior_draws, 0, 3)) %>%
+  set_names(non_ref_si) %>%
+  as_tibble()
+b_d15N_draws <- non_ref_si %>%
+  map(~ rnorm(n_prior_draws, 0, 3)) %>%
+  set_names(non_ref_si) %>%
+  as_tibble()
+
+sigma_d13C_draws <- abs(2.5 * rt(n_prior_draws, df = 3))
+sigma_d15N_draws <- abs(2.5 * rt(n_prior_draws, df = 3))
+nu_draws_si <- pmax(rgamma(n_prior_draws, 2, 0.1), 1)
+rescor_draws <- runif(n_prior_draws, -1, 1)
+
+prior_pred_draws_si <- colonies_si %>%
+  map(function(col) {
+    mu_d13C <- if (col == colonies_si[1]) intercept_d13C_draws else intercept_d13C_draws + b_d13C_draws[[col]]
+    mu_d15N <- if (col == colonies_si[1]) intercept_d15N_draws else intercept_d15N_draws + b_d15N_draws[[col]]
+
+    1:n_prior_draws %>%
+      map(function(i) {
+        Sigma <- matrix(c(sigma_d13C_draws[i]^2,
+                          rescor_draws[i] * sigma_d13C_draws[i] * sigma_d15N_draws[i],
+                          rescor_draws[i] * sigma_d13C_draws[i] * sigma_d15N_draws[i],
+                          sigma_d15N_draws[i]^2), 2, 2)
+        z <- rmvnorm(1, sigma = Sigma)
+        w <- rchisq(1, df = nu_draws_si[i])
+        tvec <- c(mu_d13C[i], mu_d15N[i]) + z / sqrt(w / nu_draws_si[i])
+        tibble(d13C = tvec[1], d15N = tvec[2])
+      }) %>%
+      list_rbind() %>%
+      mutate(source = col)
+  }) %>%
+  list_rbind()
+
+prior_pred_si <- prior_pred_draws_si %>%
+  pivot_longer(c(d13C, d15N), names_to = "isotope", values_to = "value") %>%
+  group_by(isotope) %>%
+  summarise(prior_pred_q025 = quantile(value, 0.025),
+            prior_pred_median = quantile(value, 0.5),
+            prior_pred_q975 = quantile(value, 0.975)) %>%
+  left_join(brm_dat_si %>%
+              pivot_longer(c(d13C, d15N), names_to = "isotope", values_to = "value") %>%
+              group_by(isotope) %>%
+              summarise(obs_min = min(value), obs_max = max(value)),
+            by = "isotope")
+
+prior_pred_si
+
+write_csv(prior_pred_si, "../output/prior_pred_si.csv")
+```
+
+```{r prior-pred-SI-plot}
+# Prior predictive check figure
+isotope_labels <- c("d13C" = "italic(delta)^13*C~\"(‰)\"",
+                     "d15N" = "italic(delta)^15*N~\"(‰)\"")
+
+prior_pred_plot_dat_si <- prior_pred_draws_si %>%
+  pivot_longer(c(d13C, d15N), names_to = "isotope", values_to = "value") %>%
+  group_by(isotope) %>%
+  filter(value >= quantile(value, 0.005), value <= quantile(value, 0.995)) %>%
+  ungroup() %>%
+  mutate(isotope = factor(isotope_labels[isotope], levels = isotope_labels))
+
+obs_plot_dat_si <- brm_dat_si %>%
+  pivot_longer(c(d13C, d15N), names_to = "isotope", values_to = "value") %>%
+  mutate(isotope = factor(isotope_labels[isotope], levels = isotope_labels))
+
+prior_pred_si_p <- prior_pred_plot_dat_si %>%
+  ggplot(aes(x = value)) +
+  geom_density(fill = "#6BAED6", alpha = 0.5, col = NA) +
+  geom_rug(data = obs_plot_dat_si, sides = "b", alpha = 0.4) +
+  facet_wrap(~ isotope, scales = "free", strip.position = "bottom", labeller = label_parsed) +
+  theme_classic() +
+  theme(text = element_text(size = 16),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        panel.spacing = unit(1, "lines")) +
+  labs(x = NULL, y = "Prior predictive density")
+
+prior_pred_si_p
+
+ggsave("../figures/prior_pred_si.png", width = 24, height = 12, unit = "cm", dpi = 500)
+```
+
+```{r diag-SI}
+# Convergence diagnostics
+set.seed(42)
+
+cat("Max Rhat (m_si):", max(brms::rhat(m_si), na.rm = TRUE), "\n")
+
+np_si <- nuts_params(m_si)
+n_div_si <- sum(subset(np_si, Parameter == "divergent__")$Value)
+cat("Divergent transitions (m_si):", n_div_si, "out of", ndraws(m_si),
+    "post-warmup draws\n")
+
+loo_si <- loo(m_si)
+k_si <- loo_si$diagnostics$pareto_k
+cat("Before moment matching - n(k > 0.7):", sum(k_si > 0.7),
+    " max k:", round(max(k_si), 2), "\n")
+
+loo_si_mm <- loo_moment_match(m_si, loo_si)
+k_si_mm <- loo_si_mm$diagnostics$pareto_k
+cat("After moment matching  - n(k > 0.7):", sum(k_si_mm > 0.7),
+    " max k:", round(max(k_si_mm), 2), "\n")
+
+loo_si_mm
+
+mcmc_dat_si <- mcmc_trace_data(m_si)
+mcmc_trace(m_si, pars = c("sigma_d13C", "sigma_d15N",
+                          "nu", "nu_d13C", "nu_d15N"))
+mcmc_trace(m_si)
+
+pp_check(m_si, resp = "d13C") +
+  xlim(c(-40, -5))
+pp_check(m_si, resp = "d15N") +
+  xlim(c(0, 30))
+
+prior_summary(m_si)
+
+bayes_R2(m_si)
+```
+
+```{r model-diagnostics-table}
+# Consolidated supplementary diagnostics table for the main models (9 TE + SI)
+full_model_diagnostics <- function(m, label) {
+  pars <- names(brms::rhat(m))
+  pars <- pars[!pars %in% c("lp__", "lprior")]
+  draws <- as_draws_array(m, variable = pars)
+  summ <- summarise_draws(draws, "rhat", "ess_bulk", "ess_tail") %>%
+    filter(!is.na(rhat))
+
+  np <- nuts_params(m)
+  n_div <- sum(subset(np, Parameter == "divergent__")$Value)
+  treedepth <- subset(np, Parameter == "treedepth__")$Value
+  td_limit <- m$fit@stan_args[[1]]$control$max_treedepth
+  if (is.null(td_limit)) td_limit <- 10
+  ebfmi <- tryCatch(rstan::get_bfmi(m$fit), error = function(e) NA)
+
+  l <- loo(m)
+  k_before <- l$diagnostics$pareto_k
+  n_k07_before <- sum(k_before > 0.7)
+  max_k_before <- max(k_before)
+  if (n_k07_before > 0) {
+    l_mm <- loo_moment_match(m, l)
+    k_after <- l_mm$diagnostics$pareto_k
+    n_k07_after <- sum(k_after > 0.7)
+    max_k_after <- max(k_after)
+  } else {
+    n_k07_after <- n_k07_before
+    max_k_after <- max_k_before
+  }
+
+  tibble(model = label,
+         min_rhat = min(summ$rhat), max_rhat = max(summ$rhat),
+         min_ess_bulk = round(min(summ$ess_bulk)), max_ess_bulk = round(max(summ$ess_bulk)),
+         min_ess_tail = round(min(summ$ess_tail)), max_ess_tail = round(max(summ$ess_tail)),
+         n_divergent = n_div,
+         max_treedepth = max(treedepth), treedepth_limit = td_limit,
+         min_ebfmi = round(min(ebfmi, na.rm = TRUE), 3),
+         max_pareto_k = round(max_k_before, 3), n_pareto_k_gt_0.7 = n_k07_before,
+         max_pareto_k_after_mm = round(max_k_after, 3), n_pareto_k_gt_0.7_after_mm = n_k07_after)
+}
+
+model_diagnostics_main <- elements_te %>%
+  map(~ full_model_diagnostics(m_elem[[.x]], paste0("TE: ", .x))) %>%
+  list_rbind() %>%
+  bind_rows(full_model_diagnostics(m_si, "SI: bivariate"))
+
+model_diagnostics_main
+
+write_csv(model_diagnostics_main, "../output/model_diagnostics_main.csv")
+```
+
+```{r ppc-stat-SI}
+# Posterior predictive checks
+set.seed(42)
+
+row_skewness <- function(m) {
+  xc <- m - rowMeans(m)
+  rowMeans(xc^3) / (rowMeans(xc^2))^(3/2)
+}
+skewness <- function(x) {
+  xc <- x - mean(x)
+  mean(xc^3) / mean(xc^2)^(3/2)
+}
+
+isotopes_si <- c("d13C", "d15N")
+
+rep_si <- isotopes_si %>%
+  map(function(iso) posterior_predict(m_si, resp = iso)) %>%
+  set_names(isotopes_si)
+
+skew_obs_si <- isotopes_si %>%
+  map_dbl(~ row_skewness(matrix(brm_dat_si[[.x]], nrow = 1))) %>%
+  set_names(isotopes_si)
+skew_rep_si <- isotopes_si %>%
+  map(~ row_skewness(rep_si[[.x]])) %>%
+  set_names(isotopes_si)
+
+ppc_stat_si <- isotopes_si %>%
+  map(function(iso) {
+    obs <- brm_dat_si[[iso]]
+    rep_mat <- rep_si[[iso]]
+
+    skew_obs <- skew_obs_si[[iso]]
+    skew_rep <- skew_rep_si[[iso]]
+    iqr_obs <- IQR(obs)
+    iqr_rep <- apply(rep_mat, 1, IQR)
+
+    tibble(isotope = iso,
+           stat = c("skewness", "IQR"),
+           T_obs = c(skew_obs, iqr_obs),
+           bayesian_p = c(mean(skew_rep > skew_obs, na.rm = TRUE),
+                          mean(iqr_rep > iqr_obs, na.rm = TRUE)),
+           n_excluded_nonfinite = c(sum(!is.finite(skew_rep)), sum(!is.finite(iqr_rep))))
+  }) %>%
+  list_rbind()
+
+ppc_stat_si
+
+write_csv(ppc_stat_si, "../output/ppc_stat_si.csv")
+
+# IQR figures
+for (iso in isotopes_si) {
+  obs <- brm_dat_si[[iso]]
+  rep_mat <- rep_si[[iso]]
+
+  p_iqr <- ppc_stat(y = obs, yrep = rep_mat, stat = "IQR") + ggtitle(paste(iso, "- IQR"))
+
+  print(p_iqr)
+
+  # ggsave(paste0("../figures/ppc_stat_", iso, "_IQR.png"), p_iqr,
+  #        width = 15, height = 10, unit = "cm", dpi = 300)
+}
+
+# Combined skewness check figure
+isotope_labels <- c("d13C" = "italic(delta)^13*C~\"(‰)\"",
+                     "d15N" = "italic(delta)^15*N~\"(‰)\"")
+
+skew_plot_dat_si <- isotopes_si %>%
+  map(~ tibble(isotope = .x, skew_rep = skew_rep_si[[.x]])) %>%
+  list_rbind() %>%
+  filter(is.finite(skew_rep)) %>%
+  mutate(isotope = factor(isotope_labels[isotope], levels = isotope_labels[isotopes_si]))
+
+skew_obs_dat_si <- tibble(isotope = factor(isotope_labels[isotopes_si], levels = isotope_labels[isotopes_si]),
+                           skew_obs = skew_obs_si[isotopes_si])
+
+ppc_stat_si_skew_p <- skew_plot_dat_si %>%
+  ggplot(aes(x = skew_rep)) +
+  geom_histogram(fill = "#6BAED6", alpha = 0.7, col = NA, bins = 30) +
+  geom_vline(data = skew_obs_dat_si, aes(xintercept = skew_obs),
+             col = "#DE2D26", linewidth = 0.8) +
+  facet_wrap(~ isotope, scales = "free", strip.position = "bottom", nrow = 1, labeller = label_parsed) +
+  theme_classic() +
+  theme(text = element_text(size = 16),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        panel.spacing = unit(1, "lines")) +
+  labs(x = "Simulated skewness (posterior predictive replicates)",
+       y = "Count")
+
+ppc_stat_si_skew_p
+
+# ggsave("../figures/ppc_stat_si_skewness.png", width = 20, height = 10, unit = "cm", dpi = 500)
+```
+
+```{r model-diagnostics-table-add-ppc}
+# Adds the posterior predictive check results to TE results table
+ppc_wide_te <- ppc_stat_te %>%
+  select(element, stat, bayesian_p) %>%
+  pivot_wider(names_from = stat, values_from = bayesian_p) %>%
+  transmute(model = paste0("TE: ", element),
+            skewness_p_min = skewness, skewness_p_max = skewness,
+            IQR_p_min = IQR, IQR_p_max = IQR)
+
+ppc_si_summary <- ppc_stat_si %>%
+  select(isotope, stat, bayesian_p) %>%
+  pivot_wider(names_from = isotope, values_from = bayesian_p)
+
+ppc_wide_si <- tibble(
+  model = "SI: bivariate",
+  skewness_p_min = ppc_si_summary$d13C[ppc_si_summary$stat == "skewness"],
+  skewness_p_max = ppc_si_summary$d15N[ppc_si_summary$stat == "skewness"],
+  IQR_p_min = ppc_si_summary$d13C[ppc_si_summary$stat == "IQR"],
+  IQR_p_max = ppc_si_summary$d15N[ppc_si_summary$stat == "IQR"]
+)
+
+model_diagnostics_main <- model_diagnostics_main %>%
+  left_join(bind_rows(ppc_wide_te, ppc_wide_si), by = "model")
+
+model_diagnostics_main
+
+write_csv(model_diagnostics_main, "../output/model_diagnostics_main.csv")
+```
+
+```{r summary-statistics-incl-out-SI}
+brm_dat_si %>%
+  drop_na() %>%
+  group_by(source) %>%
+  summarise(mean_d13C = round(mean(d13C), 2),
+            sd_d13C = round(sd(d13C), 2),
+            min_d13C = round(min(d13C), 2),
+            max_d13c = round(max(d13C), 2),
+            mean_d15N = round(mean(d15N), 2),
+            sd_d15N = round(sd(d15N), 2),
+            min_d15N = round(min(d15N), 2),
+            max_d15N = round(max(d15N), 2))
+
+nrow(brm_dat_si)
+length(unique(brm_dat_si$ID))
+```
+
+```{r emm-SI}
+em_col_d13C <- as.data.frame(emmeans(m_si, pairwise ~ source, resp = "d13C")$contrasts) %>%
+  mutate(sig = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0,
+                         TRUE ~ 1))
+em_col_d15N <- as.data.frame(emmeans(m_si, pairwise ~ source, resp = "d15N")$contrasts) %>%
+  mutate(sig = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0,
+                         TRUE ~ 1))
+
+em_col_si <- em_col_d13C %>%
+  left_join(em_col_d15N, by = "contrast", suffix = c(".c", ".n"))
+
+write_csv(em_col_si, "../output/emmeans_contr_si.csv")
+```
+
+```{r emm-SI-euclid}
+# Euclidean distance between fitted (d13C, d15N) for each colony pair
+# Credibility tested using the Mahalanobis distance of the difference to the NULL difference (0,0)
+
+si_draws <- brm_dat_si %>%
+  data_grid(source) %>%
+  add_epred_draws(m_si) %>%
+  ungroup() %>%
+  pivot_wider(id_cols = c(source, .draw),
+              names_from = .category,
+              values_from = .epred)
+
+colony_pairs <- combn(levels(brm_dat_si$source), 2, simplify = FALSE)
+
+euclid_dist_si <- colony_pairs %>%
+  map(function(pair) {
+    d_a <- si_draws %>% filter(source == pair[1]) %>% arrange(.draw)
+    d_b <- si_draws %>% filter(source == pair[2]) %>% arrange(.draw)
+    diff_d13C <- d_a$d13C - d_b$d13C
+    diff_d15N <- d_a$d15N - d_b$d15N
+    dist <- sqrt(diff_d13C^2 + diff_d15N^2)
+
+    diff_mat <- cbind(diff_d13C, diff_d15N)
+    mahal_sq <- mahalanobis(matrix(0, nrow = 1, ncol = 2),
+                             center = colMeans(diff_mat),
+                             cov = cov(diff_mat))
+
+    median_qi(dist, .width = 0.95) %>%
+      transmute(contrast = paste(pair[1], "-", pair[2]),
+                median_dist = y,
+                lower = ymin,
+                upper = ymax,
+                mahalanobis_sq = mahal_sq,
+                sig = as.integer(mahal_sq > qchisq(0.95, df = 2)))
+  }) %>%
+  list_rbind()
+
+euclid_dist_si
+
+write_csv(euclid_dist_si, "../output/emmeans_euclid_dist_si.csv")
+```
+
+```{r eppd-SI}
+set.seed(42)
+
+el_rect_si <- data.frame(.category = factor(c("d13C", "d15N")))
+
+lbls <- c("d13C" = expression(paste(italic(delta)^13*C~"(‰)")),
+          "d15N" = expression(paste(italic(delta)^15*N~"(‰)")))
+
+brm_dat_p_si <- brm_dat_si %>%
+  data_grid(source) %>%
+  mutate(source = factor(source, levels = c("Kent", "Country", "Middle Lawn",
+                                            "Gull", "Baccalieu"))) %>%
+  add_epred_draws(m_si)
+
+brm_dat_p_si_w <- brm_dat_p_si %>%
+  pivot_wider(id_cols = c(source, .draw),
+              names_from = .category,
+              values_from = .epred)
+
+brm_dat_pred_si_w <- brm_dat_si %>%
+  data_grid(source) %>%
+  mutate(source = factor(source, levels = c("Kent", "Country", "Middle Lawn",
+                                            "Gull", "Baccalieu"))) %>%
+  add_predicted_draws(m_si) %>%
+  pivot_wider(id_cols = c(source, .draw),
+              names_from = .category,
+              values_from = .prediction)
+
+levels(brm_dat_p_si$.category) <- c("d13C" = expression(paste(italic(delta)^13*C~"(‰)")),
+                                    "d15N" = expression(paste(italic(delta)^15*N~"(‰)")))
+
+brm_dat_p_si_w_points <- brm_dat_p_si_w  %>%
+  group_by(source) %>%
+  summarise(d13C = median(d13C),
+            d15N = median(d15N))
+```
+
+
+```{r eppd-SI-plot}
+pal_si <- brewer.pal(9, "Blues")[-c(1:3, 9)]
+
+p1 <- brm_dat_p_si_w %>%
+  ggplot() +
+  stat_ellipse(aes(x = d13C, y = d15N,
+                   col = source, fill = source),
+                   data = brm_dat_pred_si_w,
+                   alpha = 0.1, geom = "polygon") +
+  stat_ellipse(aes(x = d13C, y = d15N,
+                   col = source, fill = source),
+                   data = brm_dat_pred_si_w,
+                   level = 0.66, alpha = 0.25, geom = "polygon") +
+  geom_point(aes(x = d13C, y = d15N,
+                 col = source, fill = source),
+             data = brm_dat_p_si_w_points, size = 3) +
+  geom_point(aes(x = d13C, y = d15N),
+             data = brm_dat_p_si_w_points,
+             shape = 21, colour = "steelblue4", size = 3, stroke = 0.5, fill = NA) +
+  ggrepel::geom_label_repel(aes(x = d13C, y = d15N,
+                                label = str_wrap(source, 22, whitespace_only = TRUE)),
+                  segment.color = "black",
+                  nudge_y = c(0, 0.5, 0, 1.1, -1.0),
+                  nudge_x = c(0.2, 0.9, 1.2, 0, -0.3),
+                  size = 5, fill = NA, seed = 42,
+                  min.segment.length = 0.25,
+                  data = brm_dat_p_si_w_points, 
+                  max.iter = 0) +
+  scale_colour_manual(values = pal_si) +
+  scale_fill_manual(values = pal_si) +
+  theme_classic() +
+  theme(text = element_text(size = 20),
+        legend.position = "none") +
+  labs(x = expression(paste(italic(delta)^13*C~"(‰)")),
+       y = expression(paste(italic(delta)^15*N~"(‰)")),
+       col = "Colony",
+       fill = "Colony")
+
+psi <- ggplot() +
+  stat_pointinterval(aes(x = source, y = .epred, color = source),
+                     position = position_dodge(width = 0.85),
+                     data = brm_dat_p_si) +
+  scale_color_manual(values = brewer.pal(8, "Blues")[-c(1:3)]) +
+  ggh4x::facet_wrap2(~ .category, scales = "free",
+             labeller = label_parsed,
+             strip.position = "bottom") +
+  theme_classic() +
+  theme(text = element_text(size = 20),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.position = "none") +
+  labs(x = "Isotope",
+       y = "EPPD")
+
+pl <- ggpubr::get_legend(brm_dat_p_si_w %>%
+                           ggplot(aes(x = d13C, y = d15N, col = source)) +
+                           geom_point(size = 3) +
+                           scale_colour_manual(values = pal_si) +
+                           theme_classic() +
+                           theme(text = element_text(size = 20)) +
+                           labs(col = "Colony"))
+
+library(patchwork)
+
+plots <- p1 / psi +
+  plot_layout(heights = c(4, 1)) +
+  plot_annotation(tag_levels = "a")
+
+plots_final <- (wrap_elements(plots) | pl) +
+  plot_layout(widths = c(6, 1)) 
+
+plots_final
+
+ggsave(plots_final, filename = "../figures/EPPD_col_si.png",
+       width = 25, height = 20, unit = "cm", dpi = 500)
+```
+
+```{r brm-SI-year-sensitivity}
+# Sensitivity check for SI
+brm_dat_si_yr <- brm_dat_si %>%
+  filter(source %in% c("Kent", "Country", "Gull")) %>%
+  filter(ID != "LHSP518") %>%
+  mutate(source = fct_drop(source),
+         year = factor(year))
+
+bf1_yr <- bf(mvbind(d13C, d15N) ~ source + year) + set_rescor(TRUE)
+
+m_si_yr <- brm(bf1_yr,
+              data = brm_dat_si_yr,
+              seed = 42,
+              iter = 4000,
+              cores = 6,
+              chains = 6,
+              family = student,
+              prior = priors_si,
+              file = "../models/bm_SI_yr.rds",
+              file_refit = "on_change",
+              silent = 2,
+              save_pars = save_pars(all = TRUE))
+```
+
+```{r diag-SI-year-sensitivity}
+cat("Max Rhat (m_si_yr):", max(brms::rhat(m_si_yr), na.rm = TRUE), "\n")
+
+np_si_yr <- nuts_params(m_si_yr)
+n_div_si_yr <- sum(subset(np_si_yr, Parameter == "divergent__")$Value)
+cat("Divergent transitions (m_si_yr):", n_div_si_yr, "out of", ndraws(m_si_yr),
+    "post-warmup draws\n")
+```
+
+```{r model-diagnostics-table-sensitivity}
+model_diagnostics_sensitivity <- elements_te_yr %>%
+  map(~ full_model_diagnostics(m_elem_yr[[.x]], paste0("TE yr: ", .x))) %>%
+  list_rbind() %>%
+  bind_rows(full_model_diagnostics(m_si_yr, "SI yr: bivariate"))
+
+model_diagnostics_sensitivity
+
+write_csv(model_diagnostics_sensitivity, "../output/model_diagnostics_sensitivity.csv")
+```
+
+```{r ppc-stat-SI-year-sensitivity}
+set.seed(42)
+
+rep_si_yr <- isotopes_si %>%
+  map(function(iso) posterior_predict(m_si_yr, resp = iso)) %>%
+  set_names(isotopes_si)
+
+ppc_stat_si_yr <- isotopes_si %>%
+  map(function(iso) {
+    obs <- m_si_yr$data[[iso]]
+    rep_mat <- rep_si_yr[[iso]]
+
+    skew_obs <- row_skewness(matrix(obs, nrow = 1))
+    skew_rep <- row_skewness(rep_mat)
+    iqr_obs <- IQR(obs)
+    iqr_rep <- apply(rep_mat, 1, IQR)
+
+    tibble(isotope = iso,
+           stat = c("skewness", "IQR"),
+           T_obs = c(skew_obs, iqr_obs),
+           bayesian_p = c(mean(skew_rep > skew_obs, na.rm = TRUE),
+                          mean(iqr_rep > iqr_obs, na.rm = TRUE)),
+           n_excluded_nonfinite = c(sum(!is.finite(skew_rep)), sum(!is.finite(iqr_rep))))
+  }) %>%
+  list_rbind()
+
+ppc_stat_si_yr
+
+write_csv(ppc_stat_si_yr, "../output/ppc_stat_si_yr.csv")
+```
+
+```{r model-diagnostics-table-sensitivity-add-ppc}
+ppc_wide_te_yr <- ppc_stat_te_yr %>%
+  select(element, stat, bayesian_p) %>%
+  pivot_wider(names_from = stat, values_from = bayesian_p) %>%
+  transmute(model = paste0("TE yr: ", element),
+            skewness_p_min = skewness, skewness_p_max = skewness,
+            IQR_p_min = IQR, IQR_p_max = IQR)
+
+ppc_si_yr_summary <- ppc_stat_si_yr %>%
+  select(isotope, stat, bayesian_p) %>%
+  pivot_wider(names_from = isotope, values_from = bayesian_p)
+
+ppc_wide_si_yr <- tibble(
+  model = "SI yr: bivariate",
+  skewness_p_min = ppc_si_yr_summary$d13C[ppc_si_yr_summary$stat == "skewness"],
+  skewness_p_max = ppc_si_yr_summary$d15N[ppc_si_yr_summary$stat == "skewness"],
+  IQR_p_min = ppc_si_yr_summary$d13C[ppc_si_yr_summary$stat == "IQR"],
+  IQR_p_max = ppc_si_yr_summary$d15N[ppc_si_yr_summary$stat == "IQR"]
+)
+
+model_diagnostics_sensitivity <- model_diagnostics_sensitivity %>%
+  left_join(bind_rows(ppc_wide_te_yr, ppc_wide_si_yr), by = "model")
+
+model_diagnostics_sensitivity
+
+write_csv(model_diagnostics_sensitivity, "../output/model_diagnostics_sensitivity.csv")
+```
+
+```{r emm-SI-year-sensitivity}
+em_col_d13C_yr <- as.data.frame(emmeans(m_si_yr, pairwise ~ source, resp = "d13C")$contrasts) %>%
+  mutate(sig = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0, TRUE ~ 1))
+em_col_d15N_yr <- as.data.frame(emmeans(m_si_yr, pairwise ~ source, resp = "d15N")$contrasts) %>%
+  mutate(sig = case_when(lower.QL <= 0 & upper.QL >= 0 ~ 0, TRUE ~ 1))
+
+si_year_sensitivity_comparison <- bind_rows(
+  em_col_d13C %>%
+    filter(contrast %in% unique(em_col_d13C_yr$contrast)) %>%
+    select(contrast, sig) %>%
+    rename(sig_main = sig) %>%
+    inner_join(em_col_d13C_yr %>% select(contrast, sig) %>% rename(sig_yr = sig),
+               by = "contrast") %>%
+    mutate(isotope = "d13C", .before = 1),
+  em_col_d15N %>%
+    filter(contrast %in% unique(em_col_d15N_yr$contrast)) %>%
+    select(contrast, sig) %>%
+    rename(sig_main = sig) %>%
+    inner_join(em_col_d15N_yr %>% select(contrast, sig) %>% rename(sig_yr = sig),
+               by = "contrast") %>%
+    mutate(isotope = "d15N", .before = 1)
+) %>%
+  mutate(changed = sig_main != sig_yr)
+
+si_year_sensitivity_comparison
+
+cat("Contrasts where the significance call changed:",
+    sum(si_year_sensitivity_comparison$changed), "out of",
+    nrow(si_year_sensitivity_comparison), "\n")
+
+write_csv(si_year_sensitivity_comparison, "../output/si_year_sensitivity_comparison.csv")
+```
+
+```{r emm-SI-euclid-year-sensitivity}
+si_draws_yr <- brm_dat_si_yr %>%
+  data_grid(source, year) %>%
+  add_epred_draws(m_si_yr) %>%
+  ungroup() %>%
+  group_by(source, .draw, .category) %>%
+  summarise(.epred = mean(.epred), .groups = "drop") %>%
+  pivot_wider(id_cols = c(source, .draw),
+              names_from = .category,
+              values_from = .epred)
+
+colony_pairs_yr <- combn(levels(brm_dat_si_yr$source), 2, simplify = FALSE)
+
+euclid_dist_si_yr <- colony_pairs_yr %>%
+  map(function(pair) {
+    d_a <- si_draws_yr %>% filter(source == pair[1]) %>% arrange(.draw)
+    d_b <- si_draws_yr %>% filter(source == pair[2]) %>% arrange(.draw)
+    diff_d13C <- d_a$d13C - d_b$d13C
+    diff_d15N <- d_a$d15N - d_b$d15N
+    dist <- sqrt(diff_d13C^2 + diff_d15N^2)
+
+    diff_mat <- cbind(diff_d13C, diff_d15N)
+    mahal_sq <- mahalanobis(matrix(0, nrow = 1, ncol = 2),
+                             center = colMeans(diff_mat),
+                             cov = cov(diff_mat))
+
+    median_qi(dist, .width = 0.95) %>%
+      transmute(contrast = paste(pair[1], "-", pair[2]),
+                median_dist = y,
+                lower = ymin,
+                upper = ymax,
+                mahalanobis_sq = mahal_sq,
+                sig_yr = as.integer(mahal_sq > qchisq(0.95, df = 2)))
+  }) %>%
+  list_rbind()
+
+write_csv(euclid_dist_si_yr, "../output/emmeans_euclid_dist_si_year_sensitivity.csv")
+
+si_euclid_year_sensitivity_comparison <- euclid_dist_si %>%
+  filter(contrast %in% unique(euclid_dist_si_yr$contrast)) %>%
+  select(contrast, sig) %>%
+  rename(sig_main = sig) %>%
+  inner_join(euclid_dist_si_yr %>% select(contrast, sig_yr), by = "contrast") %>%
+  mutate(changed = sig_main != sig_yr)
+
+si_euclid_year_sensitivity_comparison
+
+write_csv(si_euclid_year_sensitivity_comparison, "../output/si_euclid_year_sensitivity_comparison.csv")
+```
+
+```{r export-tables-for-ms}
+# Generates Tables 2-5 (manuscript) and S2-S5 (SI) as individual Word
+# documents, written to ../output/tables/, directly from the fitted models
+# and derived objects above
+TABLES_DIR <- "../output/tables"
+.ml <- "␞" 
+
+fmt_tiered <- function(x) ifelse(abs(x) < 10, sprintf("%.2f", x), sprintf("%.1f", x))
+fmt2 <- function(x) sprintf("%.2f", x)
+fmt3 <- function(x) sprintf("%.3f", x)
+fmt_emm <- function(est, lo, hi, fmt = fmt_tiered) {
+  paste0(fmt(est), .ml, "[", fmt(lo), "; ", fmt(hi), "]")
+}
+
+iso_labels <- c(d13C = "δ13C", d15N = "δ15N")
+
+split_multiline_cells <- function(doc) {
+  xml_doc <- doc$doc_obj$get()
+  ns <- xml_ns(xml_doc)
+  body <- xml_find_first(xml_doc, ".//w:body", ns)
+  tbls <- xml_find_all(body, ".//w:tbl", ns)
+  tbl <- tbls[[length(tbls)]]
+  for (row in xml_find_all(tbl, "./w:tr", ns)) {
+    for (cell in xml_find_all(row, "./w:tc", ns)) {
+      p <- xml_find_first(cell, "./w:p", ns)
+      full_text <- xml_text(p)
+      if (grepl(.ml, full_text, fixed = TRUE)) {
+        parts <- strsplit(full_text, .ml, fixed = TRUE)[[1]]
+        run <- xml_find_first(p, ".//w:r", ns)
+        rpr <- xml_find_first(run, "./w:rPr", ns)
+        rpr_xml <- if (!is.na(rpr)) as.character(rpr) else ""
+        t_node <- xml_find_first(p, ".//w:t", ns)
+        xml_text(t_node) <- parts[1]
+        prev <- p
+        for (part in parts[-1]) {
+          new_p <- read_xml(paste0(
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">',
+            '<w:r>', rpr_xml, '<w:t xml:space="preserve">', part, '</w:t></w:r></w:p>'))
+          prev <- xml_add_sibling(prev, new_p, where = "after")  
+        }
+      }
+    }
+  }
+  doc
+}
+
+write_table_docx <- function(df, filename, title) {
+  doc <- read_docx()
+  doc <- body_add_par(doc, title, style = "heading 1")
+  doc <- body_add_table(doc, as.data.frame(df), style = "Table Professional", first_row = TRUE)
+  doc <- split_multiline_cells(doc)
+  print(doc, target = file.path(TABLES_DIR, filename))
+}
+
+## ---- Table 2 ----
+dp_lookup <- c(As = 2, Cd = 2, Co = 2, Cu = 2, Hg = 2, Mn = 2, Pb = 2, V = 2,
+               Zn = 1, d13C = 1, d15N = 1) # decimal points
+colonies_t2 <- c("Kent", "Country", "Middle Lawn", "Gull", "Baccalieu", "Iceland")
+
+## For censored cells, mean/SD use the Kaplan-Meier estimator (NADA::cenfit)
+km_mean_sd <- function(conc, bdt) {
+  fit <- NADA::cenfit(conc, bdt)
+  tibble(mean = unname(mean(fit)["mean"]), sd = sd(fit))
+}
+
+te_summary_t2 <- brm_dat %>%
+  group_by(source, element) %>%
+  reframe({
+    ms <- km_mean_sd(conc, BDT)
+    tibble(mean = ms$mean, sd = ms$sd, min = min(conc), max = max(conc),
+           n = n(), n_cens = sum(BDT))
+  })
+
+si_summary_t2 <- brm_dat_si %>%
+  pivot_longer(c(d13C, d15N), names_to = "element", values_to = "conc") %>%
+  group_by(source, element) %>%
+  summarise(mean = mean(conc), sd = sd(conc), min = min(conc), max = max(conc),
+            n = n(), n_cens = 0L, .groups = "drop")
+
+t2_all <- bind_rows(te_summary_t2, si_summary_t2)
+
+t2_cell <- function(el, src) {
+  d <- t2_all %>% filter(element == el, source == src)
+  if (nrow(d) == 0) return("NA")
+  dp <- dp_lookup[[el]]
+  f <- function(x) sprintf(paste0("%.", dp, "f"), x)
+  paste0(f(d$mean), " ± ", f(d$sd), .ml,
+         "[", f(d$min), ", ", f(d$max), "]", .ml,
+         "(", d$n, "; ", d$n_cens, ")")
+}
+
+table2 <- c(elements_te_tab, "d13C", "d15N") %>%
+  map(function(el) {
+    vals <- setNames(colonies_t2 %>% map_chr(~ t2_cell(el, .x)), colonies_t2)
+    label <- if (el %in% names(iso_labels)) unname(iso_labels[el]) else el
+    c(Parameter = label, vals)
+  }) %>%
+  bind_rows() %>%
+  rename(Vestmannaeyjar = Iceland)
+
+write_table_docx(table2, "table2.docx",
+  "Table 2. Mean ± SD [range] (sample size; number censored, i.e. below the limit of quantification) of trace element (TE) concentrations (µg/g) and stable isotope values (‰). For colony-element combinations with censored observations, mean and SD were estimated with the nonparametric Kaplan-Meier method for left-censored data (Helsel, 2011). Vestmannaeyjar is the Icelandic colony; all others are Canadian.")
+
+## ---- Table 3 ----
+colonies_t3 <- c("Kent", "Country", "Middle Lawn", "Gull", "Baccalieu", "Iceland")
+
+table3_te <- elements_te_tab %>%
+  map(function(el) {
+    em <- as.data.frame(emmeans(m_elem[[el]], ~ source)) %>%
+      mutate(source = factor(as.character(source), levels = colonies_t3))
+    vals <- setNames(
+      fmt_emm(exp(em$emmean), exp(em$lower.QL), exp(em$upper.QL)),
+      as.character(em$source)
+    )
+    c(Parameter = el, vals[colonies_t3])
+  }) %>%
+  bind_rows()
+
+em_si_d13C <- as.data.frame(emmeans(m_si, ~ source, resp = "d13C")) %>%
+  mutate(source = factor(as.character(source), levels = colonies_t3))
+em_si_d15N <- as.data.frame(emmeans(m_si, ~ source, resp = "d15N")) %>%
+  mutate(source = factor(as.character(source), levels = colonies_t3))
+
+table3_si <- bind_rows(
+  c(Parameter = unname(iso_labels["d13C"]),
+    setNames(fmt_emm(em_si_d13C$emmean, em_si_d13C$lower.QL, em_si_d13C$upper.QL),
+             as.character(em_si_d13C$source))[colonies_t3[colonies_t3 != "Iceland"]],
+    Iceland = "NA"),
+  c(Parameter = unname(iso_labels["d15N"]),
+    setNames(fmt_emm(em_si_d15N$emmean, em_si_d15N$lower.QL, em_si_d15N$upper.QL),
+             as.character(em_si_d15N$source))[colonies_t3[colonies_t3 != "Iceland"]],
+    Iceland = "NA")
+)
+
+table3 <- bind_rows(table3_te, table3_si) %>% select(Parameter, all_of(colonies_t3))
+write_table_docx(table3, "table3.docx",
+  "Table 3. Bayesian estimated marginal means (EMM) [95% credible interval] of trace element concentrations (back-transformed, µg/g) and stable isotope values (‰) by colony.")
+
+## ---- Table 4 ----
+table4 <- em_col %>%
+  mutate(element = factor(element, levels = elements_te)) %>%
+  group_by(element) %>%
+  summarise(`Number of pairwise differences` = sum(sig)) %>%
+  arrange(desc(`Number of pairwise differences`), element) %>%
+  rename(Element = element) %>%
+  mutate(Element = as.character(Element))
+write_table_docx(table4, "table4.docx",
+  "Table 4. The number of credible pairwise differences between colonies summed per trace element.")
+
+## ---- Table 5 ----
+colonies_si <- c("Kent", "Country", "Middle Lawn", "Gull", "Baccalieu")
+pair_order <- combn(colonies_si, 2, FUN = function(p) paste(p[1], "-", p[2]))
+
+table5 <- em_col_si %>%
+  left_join(euclid_dist_si, by = "contrast") %>%
+  transmute(
+    Contrast = contrast,
+    "δ13C" = fmt_emm(estimate.c, lower.QL.c, upper.QL.c),
+    "Different (δ13C)" = sig.c,
+    "δ15N" = fmt_emm(estimate.n, lower.QL.n, upper.QL.n),
+    "Different (δ15N)" = sig.n,
+    "δ13C & δ15N" = fmt_emm(median_dist, lower, upper),
+    "Mahalanobis²" = fmt_tiered(mahalanobis_sq),
+    "Different (joint)" = sig
+  ) %>%
+  mutate(Contrast = factor(Contrast, levels = pair_order)) %>%
+  arrange(Contrast) %>%
+  mutate(Contrast = as.character(Contrast))
+
+write_table_docx(table5, "table5.docx",
+  "Table 5. Pairwise colony contrasts for stable isotope values (δ13C, δ15N) in nestling Leach's storm-petrel feathers from five Canadian breeding colonies, plus the joint (bivariate) comparison.")
+
+## ---- Table S2 ----
+s2_te_row <- function(el) {
+  d <- model_diagnostics_main %>% filter(model == paste0("TE: ", el))
+  c(Model = el,
+    `R-hat range` = paste0(fmt3(d$min_rhat), "; ", fmt3(d$max_rhat)),
+    `Bulk-ESS range` = paste0(d$min_ess_bulk, "; ", d$max_ess_bulk),
+    `Tail-ESS range` = paste0(d$min_ess_tail, "; ", d$max_ess_tail),
+    Divergences = as.character(d$n_divergent),
+    `Max tree depth (limit)` = paste0(d$max_treedepth, " (", d$treedepth_limit, ")"),
+    `Min E-BFMI` = fmt2(d$min_ebfmi),
+    `Pareto-k (n > 0.7)` = paste0(fmt2(d$max_pareto_k), " (", d$n_pareto_k_gt_0.7, ")"),
+    `Skewness p` = fmt2(d$skewness_p_min),
+    `IQR p` = fmt2(d$IQR_p_min))
+}
+
+d_si_s2 <- model_diagnostics_main %>% filter(model == "SI: bivariate")
+s2_si_row <- c(Model = paste0("SI (", iso_labels["d13C"], " & ", iso_labels["d15N"], ")"),
+  `R-hat range` = paste0(fmt3(d_si_s2$min_rhat), "; ", fmt3(d_si_s2$max_rhat)),
+  `Bulk-ESS range` = paste0(d_si_s2$min_ess_bulk, "; ", d_si_s2$max_ess_bulk),
+  `Tail-ESS range` = paste0(d_si_s2$min_ess_tail, "; ", d_si_s2$max_ess_tail),
+  Divergences = as.character(d_si_s2$n_divergent),
+  `Max tree depth (limit)` = paste0(d_si_s2$max_treedepth, " (", d_si_s2$treedepth_limit, ")"),
+  `Min E-BFMI` = fmt2(d_si_s2$min_ebfmi),
+  `Pareto-k (n > 0.7)` = paste0(fmt2(d_si_s2$max_pareto_k), " (", d_si_s2$n_pareto_k_gt_0.7, ")"),
+  `Skewness p` = paste0(fmt2(d_si_s2$skewness_p_min), "-", fmt2(d_si_s2$skewness_p_max)),
+  `IQR p` = paste0(fmt2(d_si_s2$IQR_p_min), "-", fmt2(d_si_s2$IQR_p_max)))
+
+table_s2 <- bind_rows(elements_te_tab %>% map(s2_te_row), s2_si_row)
+write_table_docx(table_s2, "tableS2.docx",
+  "Table S2. Model performance check results. For each trace element an individual Bayesian linear model (LM) was fit, while for the stable isotopes (SI) a bivariate model was fit.")
+
+## ---- Table S3 ----
+table_s3 <- em_col %>%
+  mutate(element = factor(element, levels = elements_te_tab)) %>%
+  arrange(element) %>%
+  mutate(Estimate = fmt_emm(ratio, ratio_lower, ratio_upper)) %>%
+  transmute(Contrast = contrast, Analyte = as.character(element), Estimate, Different = sig)
+write_table_docx(table_s3, "tableS3.docx",
+  "Table S3. Pairwise comparisons between colonies for each trace element (TE) [95% credible interval]. The estimate is the back-transformed (i.e., exponentiated) Bayesian estimated marginal mean (EMM) of the contrast.")
+
+## ---- Table S4 ----
+loq_elements <- intersect(elements_te_tab, c("As", "Cd", "Co", "Mn", "Pb", "V"))
+fmt_loq <- function(x) formatC(x, format = "g", digits = 3)
+
+table_s4_loq <- brm_dat %>%
+  filter(BDT, element %in% loq_elements) %>%
+  group_by(element, source) %>%
+  summarise(n_cens = n(), median_loq = median(conc), .groups = "drop") %>%
+  mutate(cell = paste0(fmt_loq(median_loq), " (n=", n_cens, ")")) %>%
+  select(element, source, cell) %>%
+  pivot_wider(names_from = source, values_from = cell) %>%
+  mutate(element = factor(element, levels = loq_elements)) %>%
+  arrange(element) %>%
+  mutate(element = as.character(element)) %>%
+  rename(Element = element) %>%
+  select(Element, any_of(colonies_t2[colonies_t2 != "Iceland"])) %>%
+  mutate(across(-Element, ~ replace_na(., "-")))
+
+write_table_docx(table_s4_loq, "tableS4.docx",
+  "Table S4. Median limit of quantification (LOQ) by trace element and colony, among censored (below-LOQ) observations only (n = number of censored observations at that colony). Iceland, Cu, Hg and Zn had no censored observations and are omitted.")
+
+## ---- Table S5 ----
+s5_row <- function(el) {
+  d <- model_diagnostics_sensitivity %>% filter(model == paste0("TE yr: ", el))
+  skew_p <- ppc_stat_te_yr %>% filter(element == el, stat == "skewness") %>% pull(bayesian_p)
+  iqr_p  <- ppc_stat_te_yr %>% filter(element == el, stat == "IQR") %>% pull(bayesian_p)
+  c(Model = el,
+    `R-hat range` = paste0(fmt3(d$min_rhat), "; ", fmt3(d$max_rhat)),
+    `Bulk-ESS range` = paste0(d$min_ess_bulk, "; ", d$max_ess_bulk),
+    `Tail-ESS range` = paste0(d$min_ess_tail, "; ", d$max_ess_tail),
+    Divergences = as.character(d$n_divergent),
+    `Max tree depth (limit)` = paste0(d$max_treedepth, " (", d$treedepth_limit, ")"),
+    `Min E-BFMI` = fmt_tiered(d$min_ebfmi),
+    `Pareto-k (n > 0.7)` = paste0(fmt_tiered(d$max_pareto_k), " (", d$n_pareto_k_gt_0.7, ")"),
+    `Skewness p` = fmt_tiered(skew_p),
+    `IQR p` = fmt_tiered(iqr_p))
+}
+
+d_si_s5 <- model_diagnostics_sensitivity %>% filter(model == "SI yr: bivariate")
+skew_d13c <- ppc_stat_si_yr %>% filter(isotope == "d13C", stat == "skewness") %>% pull(bayesian_p)
+skew_d15n <- ppc_stat_si_yr %>% filter(isotope == "d15N", stat == "skewness") %>% pull(bayesian_p)
+iqr_d13c  <- ppc_stat_si_yr %>% filter(isotope == "d13C", stat == "IQR") %>% pull(bayesian_p)
+iqr_d15n  <- ppc_stat_si_yr %>% filter(isotope == "d15N", stat == "IQR") %>% pull(bayesian_p)
+
+s5_si_row <- c(Model = paste0("SI (", iso_labels["d13C"], " & ", iso_labels["d15N"], ")"),
+  `R-hat range` = paste0(fmt3(d_si_s5$min_rhat), "; ", fmt3(d_si_s5$max_rhat)),
+  `Bulk-ESS range` = paste0(d_si_s5$min_ess_bulk, "; ", d_si_s5$max_ess_bulk),
+  `Tail-ESS range` = paste0(d_si_s5$min_ess_tail, "; ", d_si_s5$max_ess_tail),
+  Divergences = as.character(d_si_s5$n_divergent),
+  `Max tree depth (limit)` = paste0(d_si_s5$max_treedepth, " (", d_si_s5$treedepth_limit, ")"),
+  `Min E-BFMI` = fmt_tiered(d_si_s5$min_ebfmi),
+  `Pareto-k (n > 0.7)` = paste0(fmt_tiered(d_si_s5$max_pareto_k), " (", d_si_s5$n_pareto_k_gt_0.7, ")"),
+  `Skewness p` = paste0(fmt_tiered(skew_d13c), "-", fmt_tiered(skew_d15n)),
+  `IQR p` = paste0(fmt_tiered(iqr_d13c), "-", fmt_tiered(iqr_d15n)))
+
+table_s5 <- bind_rows(intersect(elements_te_tab, elements_te_yr) %>% map(s5_row), s5_si_row)
+write_table_docx(table_s5, "tableS5.docx",
+  "Table S5. Model performance checks table for the sensitivity models (Country/Gull/Kent, year as a fixed effect). For each trace element an individual Bayesian linear model (LM) was fit, while for the stable isotopes (SI) a bivariate model was fit.")
+
+## ---- Table S6 ----
+table_s6 <- bind_rows(
+  te_year_sensitivity_comparison %>%
+    mutate(element = factor(element, levels = elements_te_tab)) %>%
+    arrange(element) %>%
+    transmute(Analyte = as.character(element), Contrast = contrast,
+              `Different (main)` = sig_main, `Different (year-adjusted)` = sig_yr, Changed = changed),
+  si_year_sensitivity_comparison %>%
+    transmute(Analyte = isotope, Contrast = contrast,
+              `Different (main)` = sig_main, `Different (year-adjusted)` = sig_yr, Changed = changed),
+  si_euclid_year_sensitivity_comparison %>%
+    transmute(Analyte = "Joint SI", Contrast = contrast,
+              `Different (main)` = sig_main, `Different (year-adjusted)` = sig_yr, Changed = changed)
+) %>%
+  mutate(across(c(`Different (main)`, `Different (year-adjusted)`, Changed), as.character))
+write_table_docx(table_s6, "tableS6.docx",
+  "Table S6. Comparison of colony-pairwise credibility calls between the main models (Table S3) and the year-adjusted sensitivity models, for each trace element and stable isotope value.")
+```
+
+```{r}
+# write_csv(dat_lng, "../data/dat_lng.csv")
+```
+
