@@ -10,7 +10,7 @@ Code and data for manuscript MPB-D-26-02679.
 
 ## Contents
 
-- `data/`
+- `data/` (column descriptions in `data/README.md`)
   - `all_data_wide.RDS`: trace element and stable isotope data
   - `icelandic_data.xlsx`: Icelandic data
   - `locations.xlsx`: sampling locations for both the Canadian and Icelandic birds (used for the map)
