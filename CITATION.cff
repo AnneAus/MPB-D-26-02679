@@ -18,7 +18,7 @@ authors:
     family-names: Hansen
   - given-names: April
     family-names: Hedd
-  - given-names: Stephen
+  - given-names: Stephen J.
     family-names: Hurling
   - given-names: Trevor
     family-names: MacLaurin
@@ -26,8 +26,6 @@ authors:
     family-names: McFarlane Tranquilla
   - given-names: Jennifer C.
     family-names: Rock
-  - given-names: Robert A.
-    family-names: Ronconi
   - given-names: Manon
     family-names: Sorais
   - given-names: Katharine R.
@@ -38,6 +36,8 @@ authors:
     family-names: Wilhelm
   - given-names: Sarah N.P.
     family-names: Wong
+  - given-names: Robert A.
+    family-names: Ronconi
   - given-names: Glenn T.
     family-names: Crossin
 repository-code: "https://github.com/AnneAus/MPB-D-26-02679"
