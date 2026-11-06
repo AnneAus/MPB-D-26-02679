@@ -22,6 +22,7 @@ library(RColorBrewer)
 library(mvtnorm)
 library(officer)
 library(xml2)
+library(NADA)
 
 # Use quantile-based (equal-tailed) credible intervals for all emmeans() contrasts
 emm_options(post.ci.method = "quantile")
@@ -100,18 +101,6 @@ dat_all %>%
           n_bdt = n(),
           prop = n_bdt/n_tot) %>%
   distinct()
-```
-
-```{r identify-imp-out}
-# #Trace elements with censored data
-# TE_imp <- dat_all %>%
-#   arrange(BDT) %>%
-#   group_by(BDT, element) %>%
-#   filter(BDT) %>%
-#   tally() %>%
-#   pull(element)
-# 
-# TE_imp <- TE_imp[-6] #remove TL because the LOQs are higher than the non-censored data
 ```
 
 ```{r}
@@ -213,7 +202,6 @@ brm_dat <- dat_all %>%
   filter_out(element == "Tl") %>%
   filter_out(element == "Co" & conc > 500) %>%
   mutate(across(where(is.character), as.factor)) %>%
-  mutate(source = fct_relevel(source, "Iceland", after = 5)) %>%
   mutate(element = factor(element),
          source = factor(source, levels = c("Kent", "Country", "Middle_lawn",
                                             "Gull", "Baccalieu", "Iceland")),
@@ -300,8 +288,7 @@ write_csv(prior_pred_te, "../output/prior_pred_te.csv")
 
 ```{r prior-pred-TE-plot}
 # Each panel is trimmed to the central 99% of that element's simulated
-# distribution for display only (the summary statistics above use the full,
-# untrimmed simulation)
+# distribution for display only
 prior_pred_plot_dat <- prior_pred_draws_te %>%
   mutate(log_conc = log(sim_conc),
          element = factor(element, levels = elements_te_tab)) %>%
@@ -407,11 +394,6 @@ set.seed(42)
 row_skewness <- function(m) {
   xc <- m - rowMeans(m)
   rowMeans(xc^3) / (rowMeans(xc^2))^(3/2)
-}
-
-skewness <- function(x) {
-  xc <- x - mean(x)
-  mean(xc^3) / mean(xc^2)^(3/2)
 }
 
 conc_rep_te <- elements_te %>%
@@ -907,7 +889,7 @@ prior_pred_si_p <- prior_pred_plot_dat_si %>%
 
 prior_pred_si_p
 
-ggsave("../figures/prior_pred_si.png", width = 24, height = 12, unit = "cm", dpi = 500)
+ggsave("../figures/prior_pred_si.png", prior_pred_si_p, width = 24, height = 12, unit = "cm", dpi = 500)
 ```
 
 ```{r diag-SI}
@@ -933,7 +915,6 @@ cat("After moment matching  - n(k > 0.7):", sum(k_si_mm > 0.7),
 
 loo_si_mm
 
-mcmc_dat_si <- mcmc_trace_data(m_si)
 mcmc_trace(m_si, pars = c("sigma_d13C", "sigma_d15N",
                           "nu", "nu_d13C", "nu_d15N"))
 mcmc_trace(m_si)
@@ -1002,15 +983,6 @@ write_csv(model_diagnostics_main, "../output/model_diagnostics_main.csv")
 ```{r ppc-stat-SI}
 # Posterior predictive checks
 set.seed(42)
-
-row_skewness <- function(m) {
-  xc <- m - rowMeans(m)
-  rowMeans(xc^3) / (rowMeans(xc^2))^(3/2)
-}
-skewness <- function(x) {
-  xc <- x - mean(x)
-  mean(xc^3) / mean(xc^2)^(3/2)
-}
 
 isotopes_si <- c("d13C", "d15N")
 
@@ -1787,8 +1759,3 @@ table_s6 <- bind_rows(
 write_table_docx(table_s6, "tableS6.docx",
   "Table S6. Comparison of colony-pairwise credibility calls between the main models (Table S3) and the year-adjusted sensitivity models, for each trace element and stable isotope value.")
 ```
-
-```{r}
-# write_csv(dat_lng, "../data/dat_lng.csv")
-```
-
