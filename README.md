@@ -8,6 +8,21 @@ Wong, Robert A. Ronconi, Glenn T. Crossin
 
 Code and data for manuscript MPB-D-26-02679.
 
+## Citing this code
+
+The code is archived on Zenodo. Please cite the version used:
+
+Ausems, A.N.M.A., Roy, S., Bond, A.L., Crick, L., Cunningham, J.T., Hansen,
+E.S., Hedd, A., Hurling, S.J., MacLaurin, T., McFarlane Tranquilla, L.A.,
+Rock, J.C., Sorais, M., Studholme, K.R., Ward, C.R.E., Wilhelm, S.I., Wong,
+S.N.P., Ronconi, R.A., Crossin, G.T., 2026. Code for: Differences in trace
+element concentrations and stable isotope values among juvenile Leach's
+storm-petrels (*Hydrobates leucorhous*) from colonies in the North Atlantic
+(v1.0). Zenodo. https://doi.org/10.5281/zenodo.24010697
+
+All versions: https://doi.org/10.5281/zenodo.24010696 (always resolves to the
+latest version).
+
 ## Contents
 
 - `data/` (column descriptions in `data/README.md`)
